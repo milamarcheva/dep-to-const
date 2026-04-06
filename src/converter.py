@@ -1,7 +1,6 @@
 import os
 from pathlib import Path
 import pyconll
-from pyconll.util import find_nonprojective_deps
 from nltk.tree import *
 import unicodedata
 
@@ -24,6 +23,43 @@ class ContainNoneError(Exception):
 class NotContainRootError(Exception):
     pass
 
+
+def keep_token(token, exclude_punct=False):
+    if token.is_multiword():
+        return False
+    if not exclude_punct:
+        return True
+    return not (token.upos == 'PUNCT' and token.form != '-')
+
+
+def sentence_tokens(sentence, exclude_punct=False):
+    return [token for token in sentence if keep_token(token, exclude_punct)]
+
+
+def nonprojective_included(sentence):
+    kept_ids = {int(token.id) for token in sentence}
+    arcs = []
+    for token in sentence:
+        try:
+            dep = int(token.id)
+            head = int(token.head)
+        except (TypeError, ValueError):
+            continue
+        if head == 0:
+            continue
+        # If the head was filtered out (e.g., punctuation removal), ignore the arc.
+        if head not in kept_ids:
+            continue
+        start, end = sorted((dep, head))
+        arcs.append((start, end))
+    for i in range(len(arcs)):
+        a_start, a_end = arcs[i]
+        for j in range(i + 1, len(arcs)):
+            b_start, b_end = arcs[j]
+            if (a_start < b_start < a_end < b_end) or (b_start < a_start < b_end < a_end):
+                return True
+    return False
+
 # Since pyconll package sometimes fail to censor non-projective dependency tree that contains crossing above root edge,
 # function for handling this exception is defined here
 def rootcross_included(sentence):
@@ -39,8 +75,11 @@ def rootcross_included(sentence):
     for token in sentence:
         if token.is_multiword():
             continue
-        head_id = token.head
-        if is_crossing_root(int(token.id), int(head_id)):
+        try:
+            head_id = int(token.head)
+        except (TypeError, ValueError):
+            continue
+        if is_crossing_root(int(token.id), head_id):
             return True
 
     return False
@@ -106,39 +145,41 @@ def sanitize_form(form):
     return form.replace('(', '-LRB-').replace(')', '-RRB-').replace('（', '-LRB-').replace('）', '-RRB-').replace(' ', '')
 
 
-def create_leaf(nt, form):
-    return f'({nt} {sanitize_form(form)}) '
+def create_leaf(preterminal_nt, form):
+    return f'({preterminal_nt} {sanitize_form(form)}) '
 
 
-def create_leaf_with_Tree(nt, form):
-    return Tree(nt, [sanitize_form(form)])
+def create_leaf_with_Tree(preterminal_nt, form):
+    return Tree(preterminal_nt, [sanitize_form(form)])
 
 
-def get_X_nt(token):
+def get_X_nt(token, preterminal=False):
     return 'X'
 
 
-def get_pos_nt(token):
+def get_pos_nt(token, preterminal=False):
+    if preterminal:
+        return f'{token.upos}'
     return f'{token.upos}P'
 
 
-def get_merge_pos_nt(token):
-    return get_pos_nt(token).replace('PRONP', 'NOUNP').replace(
-        'PROPNP', 'NOUNP').replace('DETP', 'NOUNP')
+def get_merge_pos_nt(token, preterminal=False):
+    return get_pos_nt(token, preterminal).replace('PRON', 'NOUN').replace(
+        'PROPN', 'NOUN').replace('DET', 'NOUN')
 
 
-def get_dep_nt(token):
+def get_dep_nt(token, preterminal=False):
     return f'{token.deprel}'
 
 
 def flat_converter(sentence, token, get_nt):
     children = extract_children(sentence, token)
     if len(children) == 1:
-        return create_leaf(get_nt(token), token.form)
+        return create_leaf(get_nt(token, preterminal=True), token.form)
     constituency = f'({get_nt(token)} '
     for child_id in children:
         if child_id == int(token.id):
-            sub_constituency = create_leaf(get_nt(token), token.form)
+            sub_constituency = create_leaf(get_nt(token, preterminal=True), token.form)
         else:
             sub_constituency = flat_converter(
                 sentence, get_token_with_id(sentence, child_id), get_nt)
@@ -150,7 +191,7 @@ def make_phrase_from_left(sentence, token, left_children_ids,
                           right_children_ids, get_nt):
     if left_children_ids == []:
         if right_children_ids == []:
-            return create_leaf_with_Tree(get_nt(token), token.form)
+            return create_leaf_with_Tree(get_nt(token, preterminal=True), token.form)
         else:
             r_token = get_token_with_id(sentence, right_children_ids.pop(-1))
             return Tree(get_nt(token), [
@@ -176,7 +217,7 @@ def make_phrase_from_right(sentence, token, left_children_ids,
                            right_children_ids, get_nt):
     if right_children_ids == []:
         if left_children_ids == []:
-            return create_leaf_with_Tree(get_nt(token), token.form)
+            return create_leaf_with_Tree(get_nt(token, preterminal=True), token.form)
         else:
             l_token = get_token_with_id(sentence, left_children_ids.pop(0))
             return Tree(get_nt(token), [
@@ -211,19 +252,24 @@ def right_converter(sentence, head_token, get_nt):
                                   get_nt).pformat(margin=1e100)
 
 
-def general_converter(converter, sentence, get_nt):
-    if len(find_nonprojective_deps(sentence)) != 0:
+def general_converter(converter, sentence, get_nt, exclude_punct=False):
+    filtered_sentence = sentence_tokens(sentence, exclude_punct)
+    if len(filtered_sentence) == 0:
+        raise NotContainRootError
+    if nonprojective_included(filtered_sentence):
         raise NonProjError
-    if rootcross_included(sentence):
+    if rootcross_included(filtered_sentence):
         raise RootNonProjError
-    head_token = extract_head(sentence)
-    return converter(sentence, head_token, get_nt).rstrip()
+    head_token = extract_head(filtered_sentence)
+    if head_token is None:
+        raise NotContainRootError
+    return converter(filtered_sentence, head_token, get_nt).rstrip()
 
 
-def generate_tokens(sentence):
+def generate_tokens(sentence, exclude_punct=False):
     plain_sentence = ""
     for token in sentence:
-        if token.is_multiword():
+        if not keep_token(token, exclude_punct):
             continue
         plain_sentence += sanitize_form(token.form) + ' '
     return plain_sentence.rstrip()
@@ -263,7 +309,10 @@ def get_method_str(args):
 
 
 def find_conllu_files(source_path):
-    return [conllu_file for conllu_file in Path(source_path).glob('**/*.conllu')]
+    p = Path(source_path)
+    if p.is_file() and p.suffix == '.conllu':
+        return [p]
+    return [conllu_file for conllu_file in p.glob('**/*.conllu')]
 
 
 def generate_path_info(args):

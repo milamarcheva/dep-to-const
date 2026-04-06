@@ -32,6 +32,10 @@ parser.add_argument('--use_dep_label', action='store_true')
 parser.add_argument('--dev_test_sentence_num', default=5000, type=int)
 parser.add_argument('--train_token_num', default=40000000, type=int)
 parser.add_argument('--write_deptree', action='store_true')
+parser.add_argument('--exclude_punct', action='store_true',
+                    help='Exclude punctuation from parse and token outputs, except "-"')
+parser.add_argument('--add_root', action='store_true',
+                    help='Wrap each generated parse with a top-level ROOT node.')
 
 
 def convert_conllu_files(args):
@@ -57,51 +61,97 @@ def convert_conllu_files(args):
         root_nonproj_count = 0
         notcontainroot_count = 0
 
-        with open(os.path.join(output_dir, f'{conllu_file.stem}.txt'), 'w') as f, \
-             open(os.path.join(output_dir,f'{conllu_file.stem}.tokens'), 'w') as g, \
-             original_deptree_dir.joinpath(conllu_file.name).open('w') as h:
-            for i, sentence in enumerate(corpus):
-                if i % 100000 == 0:
-                    logger.info(f'{i} data has been converted.')
-                try:
-                    phrase_structure = general_converter(
-                        converter, sentence, get_nt)
-                    if len(sentence) == 1:
-                        phrase_structure = f'({get_nt(sentence[0])} {phrase_structure})'
-                    f.write(phrase_structure)
-                    f.write('\n')
-                    g.write(generate_tokens(sentence))
-                    g.write('\n')
-                    if args.write_deptree:
+        if args.write_deptree:
+            with open(os.path.join(output_dir, f'{conllu_file.stem}.txt'), 'w') as f, \
+                 open(os.path.join(output_dir,f'{conllu_file.stem}.tokens'), 'w') as g, \
+                 original_deptree_dir.joinpath(conllu_file.name).open('w') as h:
+                for i, sentence in enumerate(corpus):
+                    if i % 100000 == 0:
+                        logger.info(f'{i} data has been converted.')
+                    try:
+                        phrase_structure = general_converter(
+                            converter, sentence, get_nt, args.exclude_punct)
+                        kept_tokens = sentence_tokens(sentence, args.exclude_punct)
+                        if len(kept_tokens) == 1:
+                            phrase_structure = f'({get_nt(kept_tokens[0])} {phrase_structure})'
+                        if args.add_root:
+                            phrase_structure = f'(ROOT {phrase_structure})'
+                        f.write(phrase_structure)
+                        f.write('\n')
+                        g.write(generate_tokens(sentence, args.exclude_punct))
+                        g.write('\n')
                         h.write(sentence.conll())
                         h.write('\n\n')
 
-                    processed_sentence_num += 1
-                    token_num += len(sentence)
-                    # extract xx sentence for dev/test set
-                    if "train" not in conllu_file.stem and processed_sentence_num == args.dev_test_sentence_num:
-                        break
-                    if "train" in conllu_file.stem and token_num > args.train_token_num:
-                        break
-                except KeyError:
-                    inclempty_count += 1
-                    continue
-                except ContainNoneError:
-                    contain_none_count += 1
-                    continue
-                except NonProjError:
-                    nonproj_count += 1
-                    continue
-                except RootNonProjError:
-                    root_nonproj_count += 1
-                    continue
-                except CFContainedError:
-                    logger.info(f'Cf contained in {sentence_to_str(sentence)}')
-                    cfcontained_count += 1
-                    continue
-                except NotContainRootError:
-                    notcontainroot_count += 1
-                    continue
+                        processed_sentence_num += 1
+                        token_num += len(sentence)
+                        if "train" not in conllu_file.stem and processed_sentence_num == args.dev_test_sentence_num:
+                            break
+                        if "train" in conllu_file.stem and token_num > args.train_token_num:
+                            break
+                    except KeyError:
+                        inclempty_count += 1
+                        continue
+                    except ContainNoneError:
+                        contain_none_count += 1
+                        continue
+                    except NonProjError:
+                        nonproj_count += 1
+                        continue
+                    except RootNonProjError:
+                        root_nonproj_count += 1
+                        continue
+                    except CFContainedError:
+                        logger.info(f'Cf contained in {sentence_to_str(sentence)}')
+                        cfcontained_count += 1
+                        continue
+                    except NotContainRootError:
+                        notcontainroot_count += 1
+                        continue
+        else:
+            with open(os.path.join(output_dir, f'{conllu_file.stem}.txt'), 'w') as f, \
+                 open(os.path.join(output_dir,f'{conllu_file.stem}.tokens'), 'w') as g:
+                for i, sentence in enumerate(corpus):
+                    if i % 100000 == 0:
+                        logger.info(f'{i} data has been converted.')
+                    try:
+                        phrase_structure = general_converter(
+                            converter, sentence, get_nt, args.exclude_punct)
+                        kept_tokens = sentence_tokens(sentence, args.exclude_punct)
+                        if len(kept_tokens) == 1:
+                            phrase_structure = f'({get_nt(kept_tokens[0])} {phrase_structure})'
+                        if args.add_root:
+                            phrase_structure = f'(ROOT {phrase_structure})'
+                        f.write(phrase_structure)
+                        f.write('\n')
+                        g.write(generate_tokens(sentence, args.exclude_punct))
+                        g.write('\n')
+
+                        processed_sentence_num += 1
+                        token_num += len(sentence)
+                        if "train" not in conllu_file.stem and processed_sentence_num == args.dev_test_sentence_num:
+                            break
+                        if "train" in conllu_file.stem and token_num > args.train_token_num:
+                            break
+                    except KeyError:
+                        inclempty_count += 1
+                        continue
+                    except ContainNoneError:
+                        contain_none_count += 1
+                        continue
+                    except NonProjError:
+                        nonproj_count += 1
+                        continue
+                    except RootNonProjError:
+                        root_nonproj_count += 1
+                        continue
+                    except CFContainedError:
+                        logger.info(f'Cf contained in {sentence_to_str(sentence)}')
+                        cfcontained_count += 1
+                        continue
+                    except NotContainRootError:
+                        notcontainroot_count += 1
+                        continue
 
         logger.info(f'Corpus size (sent): {len(corpus)}')
         logger.info(f'Converted sentences: {processed_sentence_num}')
